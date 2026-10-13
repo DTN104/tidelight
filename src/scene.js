@@ -147,6 +147,28 @@ function rockGeometry(rng, detail = 0) {
   return g;
 }
 
+// Gradient of waveH() (see util.js) plus a few small ripples, for shading only.
+const WATER_NORMAL_GLSL = /* glsl */ `
+vec2 swellGrad(vec2 p, float t) {
+  float a = 0.21 * p.x + 0.9 * t;
+  float b = 0.17 * p.y + 0.7 * t;
+  float c = 0.37 * (0.6 * p.x + 0.8 * p.y) - 1.6 * t;
+  float d = 0.55 * (-0.3 * p.x + p.y) - 2.2 * t;
+  vec2 g = vec2(0.28 * 0.21 * cos(a) * cos(b), -0.28 * 0.17 * sin(a) * sin(b));
+  g += 0.16 * 0.37 * cos(c) * vec2(0.6, 0.8);
+  g += 0.08 * 0.55 * cos(d) * vec2(-0.3, 1.0);
+  return g;
+}
+vec2 rippleGrad(vec2 p, float t) {
+  vec2 g = vec2(0.0);
+  vec2 d1 = vec2(0.8, 0.6);     g += 0.045 * 1.3 * cos(1.3 * dot(d1, p) - 1.9 * t) * d1;
+  vec2 d2 = vec2(-0.486, 0.874); g += 0.025 * 2.2 * cos(2.2 * dot(d2, p) - 2.6 * t) * d2;
+  vec2 d3 = vec2(0.954, -0.301); g += 0.012 * 3.7 * cos(3.7 * dot(d3, p) - 3.3 * t) * d3;
+  vec2 d4 = vec2(-0.196, -0.981); g += 0.006 * 5.9 * cos(5.9 * dot(d4, p) - 4.1 * t) * d4;
+  return g;
+}
+`;
+
 export class World {
   constructor(renderer) {
     this.renderer = renderer;
@@ -339,7 +361,7 @@ export class World {
 
   // ------------------------------------------------------------ water
   buildWater() {
-    const geo = new THREE.PlaneGeometry(440, 330, 110, 84);
+    const geo = new THREE.PlaneGeometry(440, 330, 160, 120);
     geo.rotateX(-Math.PI / 2);
     geo.translate(0, 0, -95);
     const p = geo.attributes.position;
@@ -364,22 +386,36 @@ export class World {
       colors[i * 3 + 2] = c.b;
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    // Smooth, per-pixel wave normals: the analytic gradient of the swell plus
+    // small fading ripples, so the surface never shows the mesh grid.
     const mat = new THREE.MeshPhongMaterial({
       color: 0xffffff,
       vertexColors: true,
-      flatShading: true,
-      shininess: 60,
-      specular: 0x2c4258,
+      shininess: 110,
+      specular: 0x3e5a78,
     });
     const time = this.time;
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = time;
       shader.vertexShader =
-        'uniform float uTime;\n' +
+        'uniform float uTime;\nvarying vec3 vWPos;\n' +
         WAVE_GLSL +
         shader.vertexShader.replace(
           '#include <begin_vertex>',
-          '#include <begin_vertex>\n  transformed.y += waveH(position.xz, uTime);'
+          '#include <begin_vertex>\n  transformed.y += waveH(position.xz, uTime);\n  vWPos = transformed;'
+        );
+      shader.fragmentShader =
+        'uniform float uTime;\nvarying vec3 vWPos;\n' +
+        WATER_NORMAL_GLSL +
+        shader.fragmentShader.replace(
+          '#include <normal_fragment_maps>',
+          `#include <normal_fragment_maps>
+  {
+    float fadeR = smoothstep(220.0, 40.0, length(vViewPosition));
+    vec2 gr = swellGrad(vWPos.xz, uTime) + rippleGrad(vWPos.xz, uTime) * fadeR;
+    vec3 nW = normalize(vec3(-gr.x, 1.0, -gr.y));
+    normal = normalize((viewMatrix * vec4(nW, 0.0)).xyz);
+  }`
         );
     };
     const water = new THREE.Mesh(geo, mat);
